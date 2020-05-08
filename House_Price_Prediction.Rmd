@@ -1,0 +1,415 @@
+---
+title: "House Price Prediction"
+author: "Plash"
+date: "4/7/2020"
+
+output:
+  html_document:
+    code_folding: hide
+    df_print: paged
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+# {.tabset .tabset-fade}
+
+
+## Introduction
+
+The data was originally published by Harrison, D. and Rubinfeld, D.L. `Hedonic prices and the demand for clean air', J. Environ. Economics & Management, vol.5, 81-102, 1978. This dataset contains information collected by the U.S Census Service concerning housing in the area of Boston Mass. 
+
+Boston Housing Data consists of price of house in suburbs of Boston. The median value variable ‘medv’ is the dependent variable which might be dependent on a set/all other predictor variables of this dataset such as crime rate in the vicinity, accessibility in terms of distance, pollution levels et cetera.
+
+Boston Housing Data comes with the MASS library.
+
+
+__Approach__
+
+The method of analysis will include following stages:
+
+* Exploratory Data Analysis of the Data
+* Randomly Splitting the data into test and training data, in the ratio of 70:30
+* Fitting various models using different variable selection methods and finding the best model using AIC , BIC and residual analysis.
+* Testing the model on out-of-sample data on the final model and stating the MSE.
+Repeat the steps above for the regression tree (CART) model.
+
+
+
+```{r,results= 'hide', warning=FALSE, message=FALSE}
+
+library(tidyverse)
+library(leaps)
+library(MASS)
+library(corrgram)
+library(glmnet)
+library(boot)
+library(rpart)
+library(rpart.plot)
+attach(Boston)
+library(randomForest)
+
+```
+
+
+## Data
+
+Boston dataset has 506 rows and 14 columns. The variable description can be seen in the next tab.
+
+```{r}
+data(Boston)
+dim(Boston)
+glimpse(Boston)
+summary(Boston)
+
+```
+
+
+__Variable Description__
+
+* crim- per capita crime rate by town.
+* zn- proportion of residential land zoned for lots over 25,000 sq.ft.
+* indus- proportion of non-retail business acres per town.
+* chas- Charles River dummy variable (= 1 if tract bounds river; 0 otherwise).
+* nox- nitrogen oxides concentration (parts per 10 million).
+* rm- average number of rooms per dwelling.
+* age- proportion of owner-occupied units built prior to 1940.
+* dis- weighted mean of distances to five Boston employment centres.
+* rad- index of accessibility to radial highways.
+* tax- full-value property-tax rate per $10,000.
+* ptratio- pupil-teacher ratio by town.
+* black- 1000(Bk - 0.63)^2 where Bk is the proportion of blacks by town.
+* lstat- lower status of the population (percent).
+* medv- median value of owner-occupied homes in $1000s.
+
+## Exploratory Data Analysis
+
+* __Missing Values__ : There are no missing values.
+
+* __Histogram__
+
+```{r}
+ggplot(gather(Boston), aes(value)) + 
+  geom_histogram(bins = 10) + 
+  facet_wrap(~key, scales = 'free_x')+
+  theme_gray()+
+  ggtitle("Histogram of all variables")
+```
+
+* __Scatter Plot__
+
+```{r}
+Boston %>% gather(key, val, -medv) %>%
+  ggplot(aes(x = val, y = medv)) +
+  geom_point() +
+  stat_smooth(method = "lm", se = TRUE, col = "green") +
+  facet_wrap(~key, scales = "free") +
+  theme_gray() +
+  ggtitle("Scatter plot of dependent variables vs Median Value (medv)") 
+```
+
+
+* __Box plot__
+```{r}
+boxplot(Boston, col = "grey")
+```
+
+* __Correlation plot__
+
+```{r}
+corrgram(Boston, upper.panel = NULL, lower.panel = panel.cor)
+```
+
+
+## Modelling {.tabset .tabset-fade}
+
+```{r}
+index <- sample(nrow(Boston),nrow(Boston)*0.70)
+boston.train <- Boston[index,]
+boston.test <- Boston[-index,]
+```
+
+
+### Linear regression model
+
+* The linear regression model was selected using LASSO variable selection technique which has low MSPE and complexity.
+
+__Key Insights__
+
+*	The final linear model equation comes out to be 
+Medv= 20.74+(4.12*rm)-(0.83*ptratio)-(0.71*dis)-(0.685*lstat)+(0.008*black)
+*	Rsq is 0.748 and adj.Rsq is 0.7399
+*	P-value of the f-statistic is very low, hence we can reject a null model.
+*	MSE and MSPE for the model is 26.05 and 25.05
+
+```{r}
+# linear regression model
+boston.lm <- regsubsets(medv~.,data=boston.train, nbest=1, nvmax = 14)
+summary(boston.lm)
+plot(boston.lm, scale="bic")
+
+full.model.lm <- lm(medv~., data=boston.train)
+model_step_b <- step(full.model.lm,direction='backward')
+summary(model_step_b)
+
+model.lm.final <- lm(medv~rm+ptratio+dis+lstat+black, data=boston.train)
+
+lm.model.summary <- summary(model.lm.final)
+
+boston.lm.pred <- predict(object = model.lm.final, newdata = boston.test)
+
+##MSE and MSPE_LM
+
+boston.lm.MSE <- (lm.model.summary$sigma)^2
+boston.lm.MSPE <- (mean((boston.lm.pred-boston.test$medv)^2))
+```
+
+### Regression Tree
+
+__Key insights__
+
+* The regression tree model consists of 6 nodes 
+* MSE of regression tree model is 14.48
+* MSPE of regression tree model is 27.26
+
+```{r}
+
+boston.rpart <- rpart(formula = medv ~ ., data = boston.train)
+prp(boston.rpart,digits = 4, extra = 1)
+
+#Insample prediction
+
+boston.train.pred.tree = predict(boston.rpart)
+boston.test.pred.tree = predict(boston.rpart,boston.test)
+
+##MSE and MSPE_Tree
+boston.tree.train.MSE <- mean((boston.train.pred.tree - boston.train$medv)^2)
+boston.tree.test.MSPE <- mean((boston.test.pred.tree - boston.test$medv)^2)
+
+MSE.tree<- sum((boston.train$medv-boston.train.pred.tree)^2)/nrow(boston.train)
+
+```
+
+### Advanced Tree
+
+__Bagging__
+
+__Key insights__
+
+* The goal of bagging is to improve prediction acurracy.
+* MSE is 11.514
+* MSPE is 10.64
+
+
+```{r}
+
+boston.bag <- randomForest(medv ~ . , data = boston.train, mtry = 13, ntree = 100)
+boston.bag
+
+##OOB Prediction
+boston.bag.oob<- randomForest(medv~., data = boston.train,mtry=13, nbagg=100)
+boston.bag.oob$err.rate[,1]
+
+##Prediction in training sample
+boston.bag.pred.train <- predict(boston.bag)
+boston.bag.train.MSE <- mean((boston.train$medv-boston.bag.pred.train)^2)
+
+##Prediction in the testing sample
+boston.bag.pred.test <- predict(boston.bag,newdata = boston.test)
+boston.bag.test.MSPE <- mean((boston.test$medv-boston.bag.pred.test)^2)
+
+```
+
+### Random Forest
+
+__Key Insights__
+
+* MSE is 11.77
+* MSPE is 13.35
+*	The predictor variables having the most impact on the above model are “rm”, “lstat”, “nox” and “dis”
+*	The minimum MSPE is achieved when Number of variables at each split = 4
+*	OOB error reduces with increase in the number of trees.
+
+
+```{r}
+### Random Forest
+
+boston.rf <- randomForest(medv~.,data=boston.train,mtry=3,importance=TRUE)
+boston.rf
+
+#Higher importance IncNodePurity is better for a variables
+boston.rf$importance
+varImpPlot(boston.rf)
+
+#OOB error for every number of trees from 1-500
+plot(boston.rf$mse,type='l',col=2,lwd=2,xlab="ntree",ylab="OOB Error")
+
+##Prediction on the training set
+boston.rf.train.pred <- predict(boston.rf)
+boston.rf.train.MSE <- mean((boston.train$medv-boston.rf.train.pred)^2)
+
+##Prediction of the testing set
+boston.rf1.pred <- predict(boston.rf,boston.test)
+boston.rf1.test.MSPE <- mean((boston.test$medv-boston.rf1.pred)^2)
+
+#evaluate performance based on mtry arguements
+oob.err <- rep(0,13)
+test.err <- rep(0,13)
+
+for(i in 1:13){
+  fit <- randomForest(medv~., data=boston.train,mtry=i)
+  oob.err[i] <- fit$mse[500]
+  test.err[i] <- mean((boston.test$medv-predict(fit, newdata = boston.test))^2)
+  cat(i," ")
+}
+
+matplot(cbind(test.err, oob.err), pch=15, col = c("red", "blue"), type = "b", ylab = "MSE", xlab = "mtry")
+legend("topright", legend = c("test Error", "OOB Error"), pch = 15, col = c("red", "blue"))
+
+```
+
+### Boosting
+
+__Key insights__
+
+* MSE is 0.034
+* MSPE is 11.15
+
+
+```{r}
+library(gbm) 
+
+boston.boost<- gbm(medv~., data = boston.train, distribution = "gaussian", n.trees = 10000, shrinkage = 0.01, interaction.depth = 8)
+summary(boston.boost)
+
+plot(boston.boost,i="lstat")
+plot(boston.boost, i="rm")
+
+boston.boost.pred.train<- predict(boston.boost,n.trees = 10000)
+boston.boost.train.MSE <- mean((boston.train$medv-boston.boost.pred.train)^2)
+
+boston.boost.pred.test<- predict(boston.boost, boston.test, n.trees = 10000)
+boston.boost.test.MSPE <- mean((boston.test$medv-boston.boost.pred.test)^2)
+
+##change in testing error based on number of trees
+
+ntree <- seq(100, 10000, 100)
+predmat <- predict(boston.boost,newdata=boston.test,n.trees = ntree)
+err<- apply((predmat-boston.test$medv)^2, 2, mean)
+plot(ntree, err, type = 'l', col=2, lwd=2, xlab = "n.trees", ylab = "Test MSE")
+abline(h=min(test.err), lty=2)
+min(err)
+
+```
+
+### Generalized Additive Models
+
+
+Residual diagnostics of linear regression model depicts the relation between medv and predictor variables might not be linear. I used GAM model due to unknown transformation of predictor variables.In GAM model, smoothing spline is used for all continuous variables except ‘chas’ and ‘rad’, which are of integer type.
+
+__Key Insights__
+
+*	EDF 1 means relationship with the response is linear (so need of spline).
+*	MSE and MSPE from the GAM model comes out to be 6.75 and 16.15 respectively.
+
+
+
+
+```{r}
+library(mgcv)
+
+Boston.gam <- gam(medv ~ s(crim) + s(zn) + s(indus) + s(nox) + s(rm) + s(age) + s(dis) + 
+                    s(tax) + s(ptratio) + s(black) + s(lstat) + chas + rad, data = boston.train)
+summary(Boston.gam)
+
+#model 2 - removing s() from functions which are linear
+Boston.gam1 <- gam(medv ~ s(crim) + s(zn) + s(indus) + s(nox) + s(rm) + age + s(dis) + 
+                    s(tax) + s(ptratio) + s(black) + s(lstat) + chas + rad, data = boston.train)
+summary(Boston.gam1)
+
+plot(Boston.gam1, shade=TRUE,seWithMean=TRUE,scale=0, pages = 1)
+
+#Model AIC, BIC, mean residual deviance
+AIC(Boston.gam1)
+BIC(Boston.gam1)
+Boston.gam1$deviance
+
+#In-sample prediction
+(Boston.gam1.mse <- mean((predict(Boston.gam1) - boston.train$medv) ^ 2))
+
+#Out-of-sample prediction - MSPE
+(Boston.gam1.mspe <- mean((predict(Boston.gam1, newdata = boston.test) - boston.test$medv) ^ 2))
+
+```
+
+### Neural Networks
+
+The response(in regression) needs to be standardized to [0,1] interval. It’s important normalize the response. If not, most of the times the algorithm will not converge. I chose to use the min-max method and scale the data in the interval [0,1].
+
+__Key Insights__
+
+*	Neural Network is like a black box, which shows the actual outcomes but the interpretation of the features is much more difficult as compare to other models.
+*	2 hidden layers having 5 and 3 neurons respectively with activation function as logistic(default) and weights highlighted in blue
+*	MSE and MSPE from the Neural Network model comes out to be 4.33 and 12.12 respectively.
+
+```{r}
+maxs <- apply(Boston, 2, max) 
+mins <- apply(Boston, 2, min)
+
+scaled <- as.data.frame(scale(Boston, center = mins, scale = maxs - mins))
+index <- sample(1:nrow(Boston),round(0.70*nrow(Boston)))
+
+train_boston <- scaled[index,]
+test_boston <- scaled[-index,]
+
+library(neuralnet)
+n <- names(train_boston)
+f <- as.formula(paste("medv ~", paste(n[!n %in% "medv"], collapse = " + ")))
+nn <- neuralnet(f,data=train_boston,hidden=c(5,3),linear.output=T)
+plot(nn)
+
+
+pr.nn.tr <- compute(nn,train_boston[,1:13])
+pr.nn_tr <- pr.nn.tr$net.result*(max(Boston$medv)-min(Boston$medv))+min(Boston$medv)
+train.r <- (train_boston$medv)*(max(Boston$medv)-min(Boston$medv))+min(Boston$medv)
+
+#In sample test
+MSE.nn.tr <- sum((train.r - pr.nn_tr)^2)/nrow(train_boston)
+MSE.nn.tr
+
+pr.nn <- compute(nn,test_boston[,1:13])
+str(pr.nn)
+
+pr.nn_ <- pr.nn$net.result*(max(Boston$medv)-min(Boston$medv))+min(Boston$medv)
+test.r <- (test_boston$medv)*(max(Boston$medv)-min(Boston$medv))+min(Boston$medv)
+
+error.df <- data.frame(test.r, pr.nn_)
+head(error.df)
+library(ggplot2)
+ggplot(error.df, aes(x = test.r, y = pr.nn_)) + geom_point() + stat_smooth()
+
+# MSPE of testing set
+MSPE.nn <- sum((test.r - pr.nn_)^2)/nrow(test_boston)
+MSPE.nn
+
+```
+
+
+## Conclusion
+
+Based on MSE and MSPE, it shows Boosting is the best model among all for Boston Housing Data 
+
+
+```{r}
+##Final Table fo MSPE
+
+stats.models <- data.frame("Model Name" = c("Linear Regression","Regression Tree", "Bagging", "Random Forest", "Boosting", "GAM", " Neural Network"),
+                             "MSE" = c(boston.lm.MSE,boston.tree.train.MSE,boston.bag.train.MSE,boston.rf.train.MSE,boston.boost.train.MSE,Boston.gam1.mse,MSE.nn.tr), 
+                           "MSPE" = c(boston.lm.MSPE,boston.tree.test.MSPE,boston.bag.test.MSPE,boston.rf1.test.MSPE,boston.boost.test.MSPE,Boston.gam1.mspe,MSPE.nn))
+
+stats.models
+
+```
+
